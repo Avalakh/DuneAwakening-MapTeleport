@@ -1,0 +1,17 @@
+node_modules/
+.npm-cache/
+work/
+dist/
+
+# Local diagnostics and credentials are never published.
+/tools/stop-owned-dune.ps1
+.env
+.env.*
+!.env.example
+*.dmp
+*.dll
+*.exe
+*.pdb
+*.obj
+*.lib
+*.log

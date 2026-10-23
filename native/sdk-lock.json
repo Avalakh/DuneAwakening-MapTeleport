@@ -1,0 +1,52 @@
+[
+  {
+    "path": "lauxlib.h",
+    "url": "https://raw.githubusercontent.com/UE4SS-RE/RE-UE4SS/f58e8f840243d60e29d46e9bb2fcc2919ef6f926/deps/first/LuaRaw/include/lauxlib.h",
+    "sha256": "2D9E18E577A6062646268E7F7228264C28BD9B972C186E1AF81B8357179C0AB4"
+  },
+  {
+    "path": "lua.h",
+    "url": "https://raw.githubusercontent.com/UE4SS-RE/RE-UE4SS/f58e8f840243d60e29d46e9bb2fcc2919ef6f926/deps/first/LuaRaw/include/lua.h",
+    "sha256": "048C6574BA5E8D225D47B66E83B479832CE353881F263ECF8389247442921F6C"
+  },
+  {
+    "path": "lua.hpp",
+    "url": "https://raw.githubusercontent.com/UE4SS-RE/RE-UE4SS/f58e8f840243d60e29d46e9bb2fcc2919ef6f926/deps/first/LuaRaw/include/lua.hpp",
+    "sha256": "9F165F5CBBF9150B917008A38D37CF63CA8ED94DC5F9B1DCEA3C281EC76ACE32"
+  },
+  {
+    "path": "luaconf.h",
+    "url": "https://raw.githubusercontent.com/UE4SS-RE/RE-UE4SS/f58e8f840243d60e29d46e9bb2fcc2919ef6f926/deps/first/LuaRaw/include/luaconf.h",
+    "sha256": "3E8E572899BC4FE1BE486CBF195C91ABC54AB96CAEA735C870C982A6FC00AF80"
+  },
+  {
+    "path": "lualib.h",
+    "url": "https://raw.githubusercontent.com/UE4SS-RE/RE-UE4SS/f58e8f840243d60e29d46e9bb2fcc2919ef6f926/deps/first/LuaRaw/include/lualib.h",
+    "sha256": "4EA0F67D3E467F5D6A327616E22A3C2DA8E03D47A3C3660916275F2842F521EA"
+  },
+  {
+    "path": "fmt/base.h",
+    "url": "https://raw.githubusercontent.com/fmtlib/fmt/11.0.2/include/fmt/base.h",
+    "sha256": "895FD797B2C203E3661CDBEB7EE4F60A637C927BE1B4A4728B9AA6400E238D90"
+  },
+  {
+    "path": "fmt/core.h",
+    "url": "https://raw.githubusercontent.com/fmtlib/fmt/11.0.2/include/fmt/core.h",
+    "sha256": "B2B6692145B11C7C2774DB106078C97575A47D18E80C7783C68566475325EBB4"
+  },
+  {
+    "path": "fmt/format.h",
+    "url": "https://raw.githubusercontent.com/fmtlib/fmt/11.0.2/include/fmt/format.h",
+    "sha256": "B2119DAB01C5F640651F92F5E37CC0E8BB7DDCCA50B2F6A7A67B662FFBEBEE00"
+  },
+  {
+    "path": "LuaMadeSimple/Common.hpp",
+    "url": "https://raw.githubusercontent.com/UE4SS-RE/RE-UE4SS/f58e8f840243d60e29d46e9bb2fcc2919ef6f926/deps/first/LuaMadeSimple/include/LuaMadeSimple/Common.hpp",
+    "sha256": "31F01ABFCDDDBBB1E82ABA06636F20C8749460276900246799B0D0C0DA13C846"
+  },
+  {
+    "path": "LuaMadeSimple/LuaMadeSimple.hpp",
+    "url": "https://raw.githubusercontent.com/UE4SS-RE/RE-UE4SS/f58e8f840243d60e29d46e9bb2fcc2919ef6f926/deps/first/LuaMadeSimple/include/LuaMadeSimple/LuaMadeSimple.hpp",
+    "sha256": "660C4884C75398E66C250FD28DEAB1FA719E2114B2F6559DE2BA9E9191AEF475"
+  }
+]

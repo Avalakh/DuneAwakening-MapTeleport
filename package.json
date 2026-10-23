@@ -1,0 +1,9 @@
+{
+  "name": "dune-awakening-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local tooling for the Dune Awakening project",
+  "devDependencies": {
+    "@fission-ai/openspec": "1.14.3"
+  }
+}

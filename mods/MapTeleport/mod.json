@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 2,
+  "id": "MapTeleport",
+  "name": "Map Teleport",
+  "version": "0.1.3",
+  "author": "Avalakh",
+  "description": "Перенос к обычной личной метке по Shift+F12 в одиночной Hagga Basin. Подготавливает верхний грунт и проверяет положение после переноса.",
+  "type": "lua",
+  "game": { "editions": [{ "store": "steam", "steamAppId": "1172710" }, { "store": "manual", "runtimeChecked": true }] },
+  "requires": [
+    { "id": "wps-launcher", "minVersion": "1.2.13" },
+    { "id": "ue4ss", "version": "3.0.1-1140-gf58e8f84" }
+  ]
+}

@@ -1,0 +1,6 @@
+* text=auto
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Preserve release input bytes so packaging reproduces the published SHA-256.
+mods/MapTeleport/** -text
