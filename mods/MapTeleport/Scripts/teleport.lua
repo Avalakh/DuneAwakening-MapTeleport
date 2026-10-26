@@ -11,6 +11,11 @@ function Teleport:message(code, detail)
     if not ok then print('[MapTeleport] message failed: '..tostring(err)..'\n') end
 end
 
+function Teleport:completed(job,code,detail)
+    self:message(code,detail)
+    if job and self.a.completed then self.a.completed(job.operationId or job.id,code,detail)end
+end
+
 function Teleport:finish(code, detail)
     local job=self.job
     if job then
@@ -28,7 +33,7 @@ function Teleport:finish(code, detail)
         end
     end
     self.job=nil
-    self:message(code,detail)
+    self:completed(job,code,detail)
 end
 
 function Teleport:restore(reason, now, context)
@@ -60,25 +65,28 @@ function Teleport:tryRestore(now,context)
     end
 end
 
-function Teleport:request()
-    if self.disabled then return self:message('disabled') end
-    if self.job then return self:message('busy') end
+function Teleport:request(point,operationId)
+    if self.disabled then self:message('disabled');return false,'disabled'end
+    if self.job then self:message('busy');return false,'busy'end
     local ok,context,reason=pcall(self.a.context)
-    if not ok then return self:message('unavailable',context) end
-    if not context then return self:message(reason or 'unavailable') end
+    if not ok then self:message('unavailable',context);return false,'unavailable'end
+    if not context then self:message(reason or'unavailable');return false,reason or'unavailable'end
     local resolved,marker,origin,now,reason=pcall(function()
         local allowed,why=self.a.eligible(context)
         if not allowed then return nil,nil,nil,why end
-        local point,markerReason=self.a.marker(context)
-        if not point then return nil,nil,nil,markerReason or'no-marker'end
+        local target,markerReason
+        if point then
+            target,markerReason=self.a.point(context,point)
+        else target,markerReason=self.a.marker(context)end
+        if not target then return nil,nil,nil,markerReason or'no-marker'end
         local snapshot,originReason=self.a.snapshot(context)
         if not snapshot then return nil,nil,nil,originReason or'unsafe-origin'end
-        return point,snapshot,self.a.now(context)
+        return target,snapshot,self.a.now(context)
     end)
-    if not resolved then return self:message('unavailable',marker)end
-    if not marker then return self:message(reason)end
+    if not resolved then self:message('unavailable',marker);return false,tostring(marker)end
+    if not marker then self:message(reason);return false,reason end
     self.sequence=self.sequence+1
-    local job={id=self.sequence, key=context.key, world=context.world,
+    local job={id=self.sequence,operationId=operationId, key=context.key, world=context.world,
         pcId=context.pcId, marker=marker, origin=origin, resources={},
         state='Prepare', started=now, stageTime=now, deadline=now+15, moved=false}
     self.job=job
@@ -86,6 +94,7 @@ function Teleport:request()
     self:message('preparing')
     local begun,err=pcall(self.a.prepare,context,job)
     if not begun then self:finish('cancelled',tostring(err)) end
+    return true
 end
 
 function Teleport:tick()
@@ -104,12 +113,12 @@ function Teleport:tick()
         if self.a.maintain then self.a.maintain(context,job)end
         if job.state=='Cleanup'then
             if self.a.releaseReady(context,job)then
-                self.job=nil;self:message(job.finalCode,job.finalDetail)
+                self.job=nil;self:completed(job,job.finalCode,job.finalDetail)
             elseif now>=job.cleanupDeadline then
                 self.disabled=true
                 local released,err=true,nil
                 if self.a.releaseRestrictions then released,err=pcall(self.a.releaseRestrictions,job)end
-                self.job=nil;self:message('cleanup-failed',released and'unload-timeout'or tostring(err))
+                self.job=nil;self:completed(job,'cleanup-failed',released and'unload-timeout'or tostring(err))
             end
         elseif job.state=='Handoff'or job.state=='RestoreHandoff'then
             if self.a.handoffReady(context,job)then

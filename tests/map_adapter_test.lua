@@ -216,13 +216,16 @@ test('preparation reads streaming levels incrementally from the current world',f
  end}}}
  f.c.pawn.GetOuter=function()return{GetOuter=function()return world end}end
  _G.FindAllOf=function(kind)assert(kind=='LandscapeStreamingProxy','Bulk streaming discovery is forbidden');return proxies end
- _G.FindFirstOf=function(kind)assert(kind=='TerrainBlocksSubsystem');return{IsValid=function()return true end,m_SpawnedInstances={ForEach=function()end}}end
+ f.objects['/Script/DuneSandbox.TerrainBlocksSubsystem']={IsValid=function()return true end}
+ f.objects['/Script/Engine.Default__SubsystemBlueprintLibrary']={IsValid=function()return true end,
+  GetWorldSubsystem=function(_,pc,class)assert(pc==f.c.pc and class==f.objects['/Script/DuneSandbox.TerrainBlocksSubsystem']);return{IsValid=function()return true end,m_SpawnedInstances={ForEach=function()end}}end}
+ _G.FindFirstOf=function()error('Subsystem lookup must belong to the current world')end
  f.job.resources={};f.a.prepare(f.c,f.job)
  assert(visits==2 and#f.job.resources.plan==1 and f.job.resources.plan[1].kind=='landscape')
  assert(f.a.release(f.job)and f.inputDestroyed)
 end)
 test('destination requires a walkable blocking floor and a free full capsule',function()
- local f=fixture();local found,blocked,normal,response=true,false,1,2;local capsuleCalls=0
+ local f=fixture();local found,blocked,normal,response=true,false,1,2;local capsuleCalls=0;local initial=false
  f.job.origin.radius=36;f.job.origin.halfHeight=92
  f.c.pawn.CharacterMovement.K2_GetWalkableFloorZ=function()return 0.64 end
  f.c.pawn.CapsuleComponent={GetCollisionObjectType=function()return 2 end}
@@ -230,6 +233,7 @@ test('destination requires a walkable blocking floor and a free full capsule',fu
  f.objects['/Script/Engine.Default__KismetSystemLibrary']={IsValid=function()return true end,
   LineTraceSingle=function(_,_,_,_,_,_,_,_,hit)
    hit.ImpactPoint={X=0,Y=0,Z=10};hit.ImpactNormal={X=0,Y=0,Z=normal}
+   hit.Time=initial and 0 or .5;hit.Distance=initial and 0 or 100;hit.PenetrationDepth=0
    hit.Component={Get=function()return f.original end};return found
   end,
   CapsuleTraceSingle=function(_,_,start,finish,radius,half)
@@ -237,9 +241,96 @@ test('destination requires a walkable blocking floor and a free full capsule',fu
    capsuleCalls=capsuleCalls+1;return blocked
   end}
  local d=assert(f.a.destination(f.c,f.job));assert(d.Z==152 and f.job.resources.owned[1].targetSupport)
- response=0;local p,why=f.a.destination(f.c,f.job);assert(not p and why=='non-blocking-surface'and capsuleCalls==1);response=2
- blocked=true;local p,why=f.a.destination(f.c,f.job);assert(not p and why=='occupied')
- normal=0.2;p,why=f.a.destination(f.c,f.job);assert(not p and why=='steep-surface'and capsuleCalls==2)
- found=false;p,why=f.a.destination(f.c,f.job);assert(not p and why=='not-loaded')
+ local function rejected(expected)
+  f.job.placementSearch=nil
+  local p,why
+  repeat p,why=f.a.destination(f.c,f.job)until why~='not-loaded'
+  assert(not p and why=='no-safe-place'and f.job.placementSearch.lastReason==expected)
+ end
+ response=0;rejected('non-blocking-surface');assert(capsuleCalls==1);response=2
+ blocked=true;rejected('occupied');local before=capsuleCalls
+ normal=0.2;rejected('steep-surface');assert(capsuleCalls==before)
+ normal=1;initial=true;rejected('initial-overlap');assert(capsuleCalls==before)
+ found=false;f.job.placementSearch=nil;local p,why=f.a.destination(f.c,f.job);assert(not p and why=='not-loaded')
+end)
+test('compact hub searches below its nearest authored playable elevation instead of an invisible ceiling',function()
+ local f=fixture();f.job.origin.radius=36;f.job.origin.halfHeight=92
+ f.job.profile={kind='compact',top=115055,bottom=-85944,
+  bounds={minX=-1000,minY=-1000,maxX=1000,maxY=1000},floorAnchors={{X=0,Y=0,Z=14717.2}}}
+ f.c.pawn.CharacterMovement.K2_GetWalkableFloorZ=function()return 0.64 end
+ f.c.pawn.CapsuleComponent={GetCollisionObjectType=function()return 2 end}
+ f.original.GetCollisionResponseToChannel=function()return 2 end
+ f.objects['/Script/Engine.Default__KismetSystemLibrary']={IsValid=function()return true end,
+  LineTraceSingle=function(_,_,start,_,_,_,_,_,hit)
+   hit.ImpactPoint={X=0,Y=0,Z=start.Z>16014 and 16014 or 14675.9}
+   hit.Time=.5;hit.Distance=100;hit.PenetrationDepth=0
+   hit.ImpactNormal={X=0,Y=0,Z=1};hit.Component={Get=function()return f.original end};return true
+  end,
+  CapsuleTraceSingle=function(_,_,start,_,radius,half)
+   assert(math.abs(start.Z-14817.9)<0.001 and radius==36 and half==92);return false
+  end}
+ local d=assert(f.a.destination(f.c,f.job));assert(math.abs(d.Z-14817.9)<0.001)
+ assert(f.job.surface.point.Z==14675.9 and f.job.placementOffset==0)
+end)
+test('explicit points use only the current profile and never read personal markers',function()
+ local f=fixture();local Profiles=require('map_profiles')
+ local p=assert(Profiles.new({id='Arrakeen',mapId='Arrakeen',worldPath='worldPath'},
+  {minX=-100,minY=-100,maxX=100,maxY=100},{min=49000,max=58000}))
+ local a=Adapter.new({profile=function(c)assert(c==f.c);return p end,validatePoint=Profiles.validate})
+ a.marker=function()error('Personal markers must not supply an explicit destination')end
+ local point={mapId='Arrakeen',layerId='surface',X=10,Y=20}
+ local target=assert(a.point(f.c,point));point.X=90;assert(target.X==10 and target.Z==0)
+ assert(not a.point(f.c,{mapId='HaggaBasin',layerId='surface',X=0,Y=0}))
+ assert(not a.point(f.c,{mapId='Arrakeen',layerId='underground',X=0,Y=0}))
+ assert(not a.point(f.c,{mapId='Arrakeen',layerId='surface',X=101,Y=0}))
+ assert(not a.point(f.c,{mapId='Arrakeen',layerId='surface',X=0/0,Y=0}))
+ p=nil;assert(not a.point(f.c,target))
+end)
+test('desert biome instances keep separate transforms and verify loaded bounds before movement',function()
+ local f=fixture();local levels,proxies={},{};local asset='/Game/Biomes/heightmap/Shared_x0_y0'
+ f.c.pawn.IsValid=function()return true end
+ for i=0,1 do
+  local loaded={GetFullName=function()return'Level /Temp/Instance'..i..'.Shared_x0_y0:PersistentLevel'end}
+  local l={IsValid=function()return true end,IsA=function()return true end,
+   GetFullName=function()return'LevelStreamingDynamic world.Desert'..i end,
+   PackageNameToLoad={ToString=function()return asset end},
+   LevelTransform={Rotation={X=0,Y=0,Z=0,W=1},Translation={X=i*10000,Y=0,Z=0},Scale3D={X=1,Y=1,Z=1}},
+   LODPackageNames={ForEach=function()end},LevelLODIndex=-1,bDisableDistanceStreaming=false,bShouldBeVisible=true,
+   IsLevelLoaded=function()return true end,IsLevelVisible=function()return true end,GetLoadedLevel=function()return loaded end,
+   ShouldBeLoaded=function()return true end,SetShouldBeLoaded=function()end,SetShouldBeVisible=function()end,
+   SetLevelLODIndex=function(self,n)self.LevelLODIndex=n end}
+  levels[#levels+1]=l;f.objects['world.Desert'..i]=l
+  proxies[#proxies+1]={GetOuter=function()return loaded end,
+   GetActorBounds=function(_,_,o,e)o.X=i*10000+500+(f.changedBounds and i==1 and 10 or 0);o.Y=500;o.Z=0;e.X=500;e.Y=500;e.Z=50 end}
+ end
+ local world={StreamingLevels={StreamingLevels={ForEach=function(_,cb)for i,l in ipairs(levels)do cb(i,{get=function()return l end})end end}}}
+ f.c.pawn.GetOuter=function()return{GetOuter=function()return world end}end
+ f.objects['/Script/Landscape.LandscapeStreamingProxy']={IsValid=function()return true end}
+ f.objects['/Script/Engine.Default__GameplayStatics'].GetAllActorsOfClass=function(_,pc,class,out)
+  assert(pc==f.c.pc and class==f.objects['/Script/Landscape.LandscapeStreamingProxy']);for i,p in ipairs(proxies)do out[i]=p end
+ end
+ f.objects['/Script/DuneSandbox.TerrainBlocksSubsystem']={IsValid=function()return true end}
+ f.objects['/Script/Engine.Default__SubsystemBlueprintLibrary']={IsValid=function()return true end,GetWorldSubsystem=function()return{IsValid=function()return true end,m_SpawnedInstances={ForEach=function()end}}end}
+ _G.FindAllOf=function()error('No cross-world bulk lookup is allowed for desert terrain')end
+ f.job.origin.position={X=250,Y=250,Z=100};f.job.marker={X=10250,Y=250};f.job.resources={}
+ f.a=Adapter.new({profile=function()return{kind='desert-streamed'}end});f.a.context=function()return f.c end
+ f.a.prepare(f.c,f.job);local plan=f.job.resources.plan
+ assert(#plan==2 and plan[1].name~=plan[2].name and plan[1].origin and plan[2].target)
+ assert(plan[1].bounds.minX==0 and plan[2].bounds.minX==10000)
+ assert(not f.a.ready(f.c,f.job));assert(not f.a.ready(f.c,f.job));assert(f.a.ready(f.c,f.job))
+ f.job.resources.owned[2].boundsVerified=nil;f.changedBounds=true
+ assert(not pcall(f.a.ready,f.c,f.job),'changed loaded geometry must fail before movement')
+ assert(f.a.release(f.job)and f.inputDestroyed)
+end)
+test('surface diagnostics preserve operation map normal threshold support and readiness',function()
+ local f=fixture();f.c.pawn.GetHealth=function()return 175 end
+ f.job.id=7;f.job.operationId=9;f.job.marker.mapId='HaggaBasin';f.job.marker.layerId='surface'
+ f.job.surface={profile='HaggaBasin',normalZ=.2,minNormalZ=.64,component='world.Ground',point={X=1,Y=2,Z=3},collisionReady=true,traceTime=.5,traceDistance=100}
+ local previous=print;local lines={};print=function(s)lines[#lines+1]=s end
+ local ok,why=pcall(f.a.log,f.job,'Surface');print=previous;assert(ok,why)
+ local text=table.concat(lines,'\n')
+ for _,field in ipairs({'operation=9','world=world','state=Surface','map=HaggaBasin','layer=surface','profile=HaggaBasin','normalZ=0.200000','minNormalZ=0.640000','support=world.Ground','collisionReady=true','traceTime=0.5','traceDistance=100','health=175.000'})do
+  assert(text:find(field,1,true),'Missing diagnostic field '..field)
+ end
 end)
 print(count..' adapter tests passed')

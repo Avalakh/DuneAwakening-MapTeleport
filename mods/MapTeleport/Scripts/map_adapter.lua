@@ -1,4 +1,6 @@
 local G=require('geometry')
+local Search=require('placement_search')
+local Profiles=require('map_profiles')
 local Adapter={}
 local WORLD='/Game/Dune/Maps/Arrakis/SOC_1/Survival_1.Survival_1'
 local function path(o) return o:GetFullName():match('^%S+ (.+)$') end
@@ -14,7 +16,8 @@ local function fullLevel(l)
     return actual==expected and(n==0 or l.LevelLODIndex==-1)
 end
 
-function Adapter.new()
+function Adapter.new(options)
+ options=options or{}
  local a={}
  function a.context()
     for _,pc in ipairs(FindAllOf('BP_DunePlayerController_C')or{})do
@@ -30,13 +33,21 @@ function Adapter.new()
     return nil,'unavailable'
  end
  function a.eligible(c)
-    if c.worldPath~=WORLD then return false,'unsupported-map' end
+    if options.profile then
+        if not options.profile(c)then return false,'unsupported-map'end
+    elseif c.worldPath~=WORLD then return false,'unsupported-map'end
     if not c.pc:HasAuthority() or not library('DuneSandbox.Default__GUIBlueprintLibrary'):IsSoloPlay(c.pc)then return false,'solo-only' end
     if c.pawn:IsDead() or c.pawn:IsInDownedState() or c.pawn:GetHealth()<=0 then return false,'dead' end
     if library('UE4Dreamworld.Default__PersistenceIdBlueprintFunctionLibrary'):IsValid_PersistenceActorId(c.pawn.m_CurrentVehicleId)then return false,'vehicle' end
     return true
  end
  function a.now(c) return library('Engine.Default__GameplayStatics'):GetRealTimeSeconds(c.pc) end
+ function a.point(c,p)
+    if not options.profile or not options.validatePoint then return nil,'profile-unavailable'end
+    local profile=options.profile(c)
+    local valid,why=options.validatePoint(profile,p);if not valid then return nil,why end
+    return {X=p.X,Y=p.Y,Z=0,mapId=p.mapId,layerId=p.layerId}
+ end
  function a.marker(c)
     local result,count=nil,0
     c.pc.m_PlayerMapMarkerComponent.m_MapMarkers.m_ClientDynamicItemCache:ForEach(function(_,ref)
@@ -57,7 +68,7 @@ function Adapter.new()
  end
  local function support(c,position,halfHeight)
     local ok,h=trace(c,position.X,position.Y,position.Z-halfHeight+30,position.Z-halfHeight-150)
-    if not ok or not G.vector(h.ImpactNormal)or h.ImpactNormal.Z<c.pawn.CharacterMovement:K2_GetWalkableFloorZ()then return false end
+    if not ok or not G.surfaceHit(h)or h.ImpactNormal.Z<c.pawn.CharacterMovement:K2_GetWalkableFloorZ()then return false end
     local component=h.Component:Get()
     local blocks=component:IsValid()and component:GetCollisionResponseToChannel(c.pawn.CapsuleComponent:GetCollisionObjectType())==2
     return blocks,blocks and path(component)or nil
@@ -71,7 +82,63 @@ function Adapter.new()
     if not supported then return nil,'unsafe-origin'end
     return {position=p,rotation={Pitch=r.Pitch,Yaw=r.Yaw,Roll=r.Roll},radius=radius,halfHeight=half,health=c.pawn:GetHealth(),supportComponent=component}
  end
+ local function desertLandscapes(c,job)
+    local entries,loaded={},{}
+    c.pawn:GetOuter():GetOuter().StreamingLevels.StreamingLevels:ForEach(function(_,ref)
+        local l=ref:get()
+        if l:IsValid()and l:IsA('/Script/Engine.LevelStreamingDynamic')then
+            local asset=l.PackageNameToLoad:ToString()
+            local x,y=asset:match('/heightmap/[^/]+_x(%d+)_y(%d+)$')
+            if x then
+                -- Deep Desert repeats one biome asset at many transforms.
+                -- The streaming instance, not PackageNameToLoad, is its key.
+                local t=l.LevelTransform;local q=t.Rotation;local s=t.Scale3D
+                assert(math.abs(q.X)<1e-6 and math.abs(q.Y)<1e-6 and s.X>0 and s.Y>0 and s.Z>0,'Unsupported desert landscape transform')
+                local e={level=l,x=tonumber(x),y=tonumber(y),transform={Rotation={X=q.X,Y=q.Y,Z=q.Z,W=q.W},
+                    Translation=G.copy(t.Translation),Scale3D=G.copy(s)}}
+                entries[#entries+1]=e
+                if l:IsLevelLoaded()then loaded[path(l:GetLoadedLevel())]=e end
+            end
+        end
+    end)
+    local proxies={};library('Engine.Default__GameplayStatics'):GetAllActorsOfClass(c.pc,object('/Script/Landscape.LandscapeStreamingProxy'),proxies)
+    local basis,count=nil,0
+    for _,ref in ipairs(proxies)do
+        local p=ref.get and ref:get()or ref;local e=loaded[path(p:GetOuter())]
+        if e then
+            local o,extent={},{};p:GetActorBounds(false,o,extent,false)
+            local loX,loY,hiX,hiY=math.huge,math.huge,-math.huge,-math.huge
+            for _,x in ipairs({o.X-extent.X,o.X+extent.X})do for _,y in ipairs({o.Y-extent.Y,o.Y+extent.Y})do
+                local v=G.inverseTransform(e.transform,{X=x,Y=y,Z=o.Z})
+                loX=math.min(loX,v.X);loY=math.min(loY,v.Y);hiX=math.max(hiX,v.X);hiY=math.max(hiY,v.Y)
+            end end
+            local b={dx=hiX-loX,dy=hiY-loY};b.x=loX-e.x*b.dx;b.y=loY-e.y*b.dy
+            assert(G.finite(b.dx)and G.finite(b.dy)and b.dx>0 and b.dy>0,'Invalid desert landscape bounds')
+            if basis then assert(math.abs(b.dx-basis.dx)<1 and math.abs(b.dy-basis.dy)<1 and math.abs(b.x-basis.x)<1 and math.abs(b.y-basis.y)<1,'Inconsistent desert landscape grid')
+            else basis=b end
+            count=count+1
+        end
+    end
+    assert(basis and count>=2,'Desert landscape grid unavailable')
+    local plan={};local originFound,targetFound=false,false
+    for _,e in ipairs(entries)do
+        local x,y=basis.x+e.x*basis.dx,basis.y+e.y*basis.dy
+        local bounds=G.bounds2(e.transform,{Min={X=x,Y=y,Z=0},Max={X=x+basis.dx,Y=y+basis.dy,Z=0}})
+        local origin,target=G.contains(bounds,job.origin.position,100),G.contains(bounds,job.marker,100)
+        if origin or target then
+            assert(not e.level.bDisableDistanceStreaming or e.level.LevelLODIndex==-1,'Desert landscape owned by another streaming override')
+            plan[#plan+1]={kind='landscape',name=path(e.level),bounds=bounds,origin=origin,target=target,verifyBounds=true}
+            originFound=originFound or origin;targetFound=targetFound or target
+        end
+    end
+    assert(originFound and targetFound,'Point outside supported desert landscape')
+    return plan
+ end
  local function selectSources(c,job)
+    local profile=options.profile and options.profile(c)
+    local plan
+    if profile and profile.kind=='desert-streamed'then plan=desertLandscapes(c,job)
+    else
     local levels={}
     -- Enumerate this world's array incrementally. FindAllOf constructed over
     -- 7,600 Lua wrappers at once and crashed inside UE4SS while building them.
@@ -79,7 +146,9 @@ function Adapter.new()
         local l=reference:get()
         if l:IsValid()and l:IsA('/Script/Engine.LevelStreamingDynamic')then
             local s=l.PackageNameToLoad:ToString()
-            if s:find('/Tiles/SOS%-MinorErg_x%d+_y%d+$') then levels[s]=l end
+            local profile=options.profile and options.profile(c)
+            local pattern=profile and profile.kind=='desert-streamed'and'/Tiles/[^/]+_x%d+_y%d+$'or'/Tiles/SOS%-MinorErg_x%d+_y%d+$'
+            if s:find(pattern) then levels[s]=l end
         end
     end)
     local basis,count=nil,0
@@ -98,7 +167,7 @@ function Adapter.new()
         end
     end
     assert(basis and count>=2,'Landscape grid unavailable')
-    local plan={}
+    plan={}
     local originFound,targetFound=false,false
     for s,l in pairs(levels)do
         local _,x,y=s:match('^(.-)_x(%d+)_y(%d+)$')
@@ -111,7 +180,9 @@ function Adapter.new()
         end
     end
     assert(originFound and targetFound,'Point outside supported landscape')
-    local sub=FindFirstOf('TerrainBlocksSubsystem');assert(sub:IsValid(),'Terrain subsystem unavailable')
+    end
+    local sub=library('Engine.Default__SubsystemBlueprintLibrary'):GetWorldSubsystem(c.pc,object('/Script/DuneSandbox.TerrainBlocksSubsystem'))
+    assert(sub:IsValid(),'Terrain subsystem unavailable in current world')
     sub.m_SpawnedInstances:ForEach(function(_,ref)
         ref:get().SubLevels:ForEach(function(_,r)
             local entry=r:get();local l=entry.StreamingLevel
@@ -145,7 +216,9 @@ function Adapter.new()
     job.resources.inputLockName=path(lock)
     actor:EnableInput(c.pc)
     c.pawn.CharacterMovement:StopMovementImmediately()
-    job.resources.plan=selectSources(c,job)
+    local profile=options.profile and options.profile(c)
+    job.profile=profile
+    job.resources.plan=profile and profile.kind=='compact'and{}or selectSources(c,job)
     job.resources.next=1;job.resources.owned={}
  end
  function a.ready(c,job)
@@ -153,7 +226,7 @@ function Adapter.new()
     if item then
         local source=object(item.name)
         if item.kind=='landscape' then
-            local owned={kind='landscape',name=item.name,lod=source.LevelLODIndex,distance=source.bDisableDistanceStreaming,load=source:ShouldBeLoaded(),visible=source.bShouldBeVisible,bounds=item.bounds,origin=item.origin,target=item.target}
+            local owned={kind='landscape',name=item.name,lod=source.LevelLODIndex,distance=source.bDisableDistanceStreaming,load=source:ShouldBeLoaded(),visible=source.bShouldBeVisible,bounds=item.bounds,origin=item.origin,target=item.target,verifyBounds=item.verifyBounds}
             r.owned[#r.owned+1]=owned
             source.bDisableDistanceStreaming=true;source:SetLevelLODIndex(-1);source:SetShouldBeLoaded(true);source:SetShouldBeVisible(true)
         else
@@ -169,11 +242,35 @@ function Adapter.new()
         return false
     end
     for _,owned in ipairs(r.owned)do if not fullLevel(object(owned.name))then return false end end
+    local verification
+    for _,owned in ipairs(r.owned)do if owned.verifyBounds and not owned.boundsVerified then
+        if not verification then verification={};library('Engine.Default__GameplayStatics'):GetAllActorsOfClass(c.pc,object('/Script/Landscape.LandscapeStreamingProxy'),verification)end
+        local expected=path(object(owned.name):GetLoadedLevel());local found=false
+        for _,ref in ipairs(verification)do
+            local p=ref.get and ref:get()or ref
+            if path(p:GetOuter())==expected then
+                local o,e={},{};p:GetActorBounds(false,o,e,false);local b=owned.bounds
+                assert(math.abs(o.X-e.X-b.minX)<1 and math.abs(o.X+e.X-b.maxX)<1 and math.abs(o.Y-e.Y-b.minY)<1 and math.abs(o.Y+e.Y-b.maxY)<1,'Loaded desert landscape bounds differ from plan')
+                found=true
+            end
+        end
+        if not found then return false end
+        owned.boundsVerified=true
+    end end
     return true
  end
- function a.destination(c,job)
-    local ok,h=trace(c,job.marker.X,job.marker.Y,1000000,-300000)
+ local function candidate(c,job,point)
+    local profile=job.profile
+    local top,reason=Profiles.traceTop(profile,point,job.origin.halfHeight)
+    if not top then return nil,reason end
+    local ok,h=trace(c,point.X,point.Y,top,profile and profile.bottom or -300000)
     if not ok then return nil,'not-loaded' end
+    local observedComponent=h.Component:Get()
+    job.surface={point={X=h.ImpactPoint.X,Y=h.ImpactPoint.Y,Z=h.ImpactPoint.Z},normalZ=h.ImpactNormal.Z,
+        minNormalZ=c.pawn.CharacterMovement:K2_GetWalkableFloorZ(),component=observedComponent:IsValid()and path(observedComponent)or'invalid',
+        profile=profile and profile.id or'HaggaBasin',collisionReady=true,traceTime=h.Time,traceDistance=h.Distance}
+    if a.log then pcall(a.log,job,'Surface')end
+    local valid,hitReason=G.surfaceHit(h);if not valid then return nil,hitReason end
     local d,why=G.destination(h.ImpactPoint,h.ImpactNormal,job.origin.radius,job.origin.halfHeight,c.pawn.CharacterMovement:K2_GetWalkableFloorZ())
     if not d then return nil,why end
     local component=h.Component:Get()
@@ -195,6 +292,11 @@ function Adapter.new()
         end
     end
     return d
+ end
+ function a.destination(c,job)
+    return Search.step(job,function(point)return candidate(c,job,point)end,function(point)
+        return not job.profile or G.contains(job.profile.bounds,point)
+    end)
  end
  -- The game's terrain manager can change a source LOD after initial readiness.
  -- Keep every still-owned source pinned, including the retained return point.
@@ -380,8 +482,10 @@ function Adapter.new()
     return a.handoffReady(c,job)
  end
  local messages={preparing='Подготовка места назначения…',success='Перенос завершён',busy='Перенос уже выполняется',['no-marker']='Поставьте личную метку на карте M',restored='Перенос отменён, исходная позиция восстановлена',timeout='Место назначения не загрузилось',['restore-failed']='Ошибка восстановления: переносы отключены',disabled='Переносы отключены после ошибки',dead='Перенос недоступен: персонаж не готов',vehicle='Сначала покиньте транспорт',['solo-only']='Требуется одиночная игра',['unsupported-map']='Эта карта не поддерживается'}
+ local reasons={['no-safe-place']='Не найдено безопасное место для появления',['steep-surface']='Слишком крутая поверхность',['occupied']='Недостаточно места для персонажа',['initial-overlap']='Точка внутри препятствия',['invalid-trace-hit']='Поверхность не подтверждена',['non-blocking-surface']='Нет надёжной опоры',['playable-height-unavailable']='Не определён игровой уровень поверхности',['no-support']='Не подтверждена опора',['unsafe-origin']='Не подтверждена исходная опора',['wrong-map-or-layer']='Точка принадлежит другой карте или слою',['outside-map']='Точка за границами карты'}
+ function a.describeReason(code)return reasons[code]or messages[code]or tostring(code)end
  function a.message(code,detail)
-    local text=messages[code]or('Перенос отменён: '..tostring(detail or code))
+    local text=code=='partial'and tostring(detail)or messages[code]or reasons[detail]or('Перенос отменён: '..tostring(detail or code))
     print('[MapTeleport] '..code..' '..tostring(detail or '')..'\n')
     local c=a.context()
     if c then
@@ -402,6 +506,15 @@ function Adapter.new()
         observed=string.format(' current=(%.3f,%.3f,%.3f) health=%.3f',p.X,p.Y,p.Z,c.pawn:GetHealth())
     end
     print(string.format('[MapTeleport] request=%s world=%s state=%s marker=(%.3f,%.3f) origin=(%.3f,%.3f,%.3f)%s\n',job.id,job.world,phase,job.marker.X,job.marker.Y,job.origin.position.X,job.origin.position.Y,job.origin.position.Z,observed))
+    if job.destination then
+        local d=job.destination
+        print(string.format('[MapTeleport] placement requested=(%.3f,%.3f) actual=(%.3f,%.3f,%.3f) offsetMeters=%.3f\n',job.marker.X,job.marker.Y,d.X,d.Y,d.Z,(job.placementOffset or 0)/100))
+    end
+    if job.surface then
+        local s=job.surface
+        print(string.format('[MapTeleport] operation=%s map=%s layer=%s profile=%s normalZ=%.6f minNormalZ=%.6f support=%s impact=(%.3f,%.3f,%.3f) collisionReady=%s traceTime=%s traceDistance=%s\n',
+            tostring(job.operationId or job.id),tostring(job.marker.mapId or'HaggaBasin'),tostring(job.marker.layerId or'surface'),s.profile,s.normalZ,s.minNormalZ,s.component,s.point.X,s.point.Y,s.point.Z,tostring(s.collisionReady),tostring(s.traceTime),tostring(s.traceDistance)))
+    end
  end
  return a
 end

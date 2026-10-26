@@ -1,33 +1,35 @@
 package.path='mods/MapTeleport/Scripts/?.lua;'..package.path
-local Runtime=require('runtime')
-local count=0
-local function test(name,run)run();count=count+1;print('PASS '..name)end
+local Runtime=require('runtime');local count=0
+local function test(n,f)f();count=count+1;print('PASS '..n)end
 local function fixture()
- local f={down=true,present=true,requests=0,ticks=0}
- local pc={IsInputKeyDown=function()return f.down end}
- local r=Runtime.new({context=function()if f.present then return{pc=pc}end end})
- r.runner.request=function()f.requests=f.requests+1 end
- r.runner.tick=function()f.ticks=f.ticks+1 end
- f.r=r;return f
+ local f={keys={f12=true,shift=true,ctrl=false,focused=true},opens=0,updates=0}
+ f.r=Runtime.new({input=function()return f.keys end,open=function()f.opens=f.opens+1;return true end,
+ update=function()f.updates=f.updates+1 end,recover=function(e)f.error=e end})
+ function f.release()f.keys.f12=false;f.r.tick();f.r.tick();f.keys.f12=true end
+ return f
 end
-_G.FName=function(v)return v end
-test('twelve-second hold accepts one request despite repeated key notifications',function()
- local f=fixture();f.r.hit()
- for i=1,240 do f.r.hit();f.r.tick()end
- assert(f.requests==1 and f.ticks==240)
+test('twelve-second hold opens one window and continues updates',function()
+ local f=fixture();f.r.hit();for i=1,240 do f.r.hit();f.r.tick()end
+ assert(f.opens==1 and f.updates==240);f.release();f.r.hit();assert(f.opens==2)
 end)
-test('a released key allows the next distinct press',function()
- local f=fixture();f.r.hit();f.down=false;f.r.tick();f.r.tick()
- f.down=true;f.r.hit();assert(f.requests==2)
+test('plain F12 and Ctrl chords cannot become a command on modifier release',function()
+ for _,shift in ipairs({false,true})do
+  local f=fixture();f.keys.ctrl=true;f.keys.shift=shift;f.r.tick();f.r.hit();assert(f.opens==0)
+  f.keys.ctrl=false;f.keys.shift=true;f.r.tick();f.r.hit();assert(f.opens==0)
+  f.release();f.r.hit();assert(f.opens==1)
+ end
+ local f=fixture();f.keys.shift=false;f.r.tick();f.keys.shift=true;f.r.hit();assert(f.opens==0)
 end)
-test('one missing down sample while held does not start another request',function()
- local f=fixture();f.r.hit();f.down=false;f.r.tick();f.down=true;f.r.tick();f.r.hit()
- assert(f.requests==1)
+test('one absent sample does not release a held key',function()
+ local f=fixture();f.r.hit();f.keys.f12=false;f.r.tick();f.keys.f12=true;f.r.tick();f.r.hit();assert(f.opens==1)
 end)
-test('losing the character never creates a request and permits a fresh press after return',function()
- local f=fixture();f.r.hit();f.present=false
- for i=1,20 do f.r.tick()end
- assert(f.requests==1)
- f.present=true;f.r.hit();assert(f.requests==2)
+test('focus loss and unavailable context discard intent',function()
+ local f=fixture();f.keys.focused=false;f.r.hit();assert(f.opens==0)
+ f.keys.focused=true;f.r.hit();assert(f.opens==0);f.release();f.r.hit();assert(f.opens==1)
+ local g=fixture();local keys=g.keys;g.keys=nil;g.r.hit();g.r.tick();g.r.tick();g.keys=keys
+ keys.f12=false;assert(not g.r.hit());assert(g.opens==0)
 end)
-print(count..' runtime tests passed')
+test('notification after release never executes',function()
+ local f=fixture();f.keys.f12=false;f.r.hit();assert(f.opens==0)
+end)
+print(count..' unified runtime tests passed')

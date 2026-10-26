@@ -7,7 +7,13 @@ if ($manifest.schemaVersion -ne 2 -or $manifest.id -ne 'MapTeleport' -or $manife
 if ($manifest.version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid version' }
 if (@($manifest.requires | Where-Object id -eq 'ue4ss')[0].version -ne '3.0.1-1140-gf58e8f84') { throw 'Unqualified UE4SS dependency' }
 if (@($manifest.requires | Where-Object { $_.id -notin @('wps-launcher','ue4ss') }).Count) { throw 'Unexpected dependency' }
-$files = @('mod.json','README.md','Scripts/geometry.lua','Scripts/main.lua','Scripts/map_adapter.lua','Scripts/runtime.lua','Scripts/teleport.lua') | Sort-Object
+$files = @(
+    'mod.json','README.md','Scripts/geometry.lua','Scripts/main.lua',
+    'Scripts/map_adapter.lua','Scripts/runtime.lua','Scripts/teleport.lua','Scripts/placement_search.lua',
+    'Scripts/application.lua','Scripts/input_owner.lua','Scripts/map_profiles.lua',
+    'Scripts/map_projection.lua','Scripts/map_canvas.lua','Scripts/map_view_adapter.lua','Scripts/teleport_window.lua',
+    'Scripts/region_catalog.lua','Scripts/region_selection.lua','Scripts/region_travel.lua','Scripts/travel_adapter.lua'
+) | Sort-Object
 foreach ($relative in $files) { if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot $relative) -PathType Leaf)) { throw "Missing $relative" } }
 [void][IO.Directory]::CreateDirectory($OutputDirectory)
 $outputRoot = (Resolve-Path -LiteralPath $OutputDirectory).Path
