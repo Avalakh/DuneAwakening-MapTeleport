@@ -44,23 +44,24 @@ function C.zoom(l,x,y,factor,px,py)
  return next
 end
 local cachedSize
-local function captureSize(width,height)
- if cachedSize and cachedSize.width==width and cachedSize.height==height then return cachedSize end
+local function captureSize(width,height,maxWidth,maxHeight)
+ maxWidth=maxWidth or 1536;maxHeight=maxHeight or 1536
+ if cachedSize and cachedSize.width==width and cachedSize.height==height and cachedSize.maxWidth==maxWidth and cachedSize.maxHeight==maxHeight then return cachedSize end
  local aspect=width/height;local best=math.huge;local rw,rh=2,2
  -- Even dimensions keep centre UV aligned with the native integer-pixel ray.
  -- Match the viewport ratio before maximising resolution: rounding one side
  -- at a fixed 1536 width moves clicks by metres on large world maps.
- for w=2,1536,2 do
+ for w=2,maxWidth,2 do
   local h=2*math.floor(w/aspect/2+.5)
-  if h>=2 and h<=1536 then
+  if h>=2 and h<=maxHeight then
    local error=math.abs((w/h)/aspect-1)
    if error<best-1e-12 or(math.abs(error-best)<=1e-12 and w*h>rw*rh)then best=error;rw=w;rh=h end
   end
  end
- cachedSize={width=width,height=height,rtWidth=rw,rtHeight=rh};return cachedSize
+ cachedSize={width=width,height=height,maxWidth=maxWidth,maxHeight=maxHeight,rtWidth=rw,rtHeight=rh};return cachedSize
 end
-function C.capture(viewport,rect)
- local size=captureSize(viewport.width,viewport.height)
+function C.capture(viewport,rect,maxWidth,maxHeight)
+ local size=captureSize(viewport.width,viewport.height,maxWidth,maxHeight)
  return{u=(viewport.x+viewport.width/2-rect.x)/rect.width,
   v=(viewport.y+viewport.height/2-rect.y)/rect.height,
   fraction=viewport.width/rect.width,

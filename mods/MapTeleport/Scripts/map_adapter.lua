@@ -1,6 +1,7 @@
 local G=require('geometry')
 local Search=require('placement_search')
 local Profiles=require('map_profiles')
+local Array=require('unreal_array')
 local Adapter={}
 local WORLD='/Game/Dune/Maps/Arrakis/SOC_1/Survival_1.Survival_1'
 local function path(o) return o:GetFullName():match('^%S+ (.+)$') end
@@ -8,7 +9,7 @@ local function object(name) local o=StaticFindObject(name);assert(o:IsValid(),'O
 local function library(name) return object('/Script/'..name) end
 local function fullLevel(l)
     if not l:IsLevelLoaded() or not l:IsLevelVisible() then return false end
-    local n=0;l.LODPackageNames:ForEach(function()n=n+1 end)
+    local n=l.LODPackageNames:GetArrayNum()
     local actual=path(l:GetLoadedLevel()):match('%.([^%.:]+):PersistentLevel$')
     local expected=l.PackageNameToLoad:ToString():match('/([^/]+)$')
     -- The requested index changes before asynchronous replacement finishes;
@@ -50,8 +51,7 @@ function Adapter.new(options)
  end
  function a.marker(c)
     local result,count=nil,0
-    c.pc.m_PlayerMapMarkerComponent.m_MapMarkers.m_ClientDynamicItemCache:ForEach(function(_,ref)
-        local m=ref:get()
+    Array.each(c.pc.m_PlayerMapMarkerComponent.m_MapMarkers.m_ClientDynamicItemCache,function(_,m)
         if m.m_MarkerType.Name:ToString()=='PersonalMarker' then
             count=count+1;local v=m.m_WorldPosition
             if G.vector(v) then result=G.copy(v) end
@@ -84,8 +84,7 @@ function Adapter.new(options)
  end
  local function desertLandscapes(c,job)
     local entries,loaded={},{}
-    c.pawn:GetOuter():GetOuter().StreamingLevels.StreamingLevels:ForEach(function(_,ref)
-        local l=ref:get()
+    Array.each(c.pawn:GetOuter():GetOuter().StreamingLevels.StreamingLevels,function(_,l)
         if l:IsValid()and l:IsA('/Script/Engine.LevelStreamingDynamic')then
             local asset=l.PackageNameToLoad:ToString()
             local x,y=asset:match('/heightmap/[^/]+_x(%d+)_y(%d+)$')
@@ -142,8 +141,7 @@ function Adapter.new(options)
     local levels={}
     -- Enumerate this world's array incrementally. FindAllOf constructed over
     -- 7,600 Lua wrappers at once and crashed inside UE4SS while building them.
-    c.pawn:GetOuter():GetOuter().StreamingLevels.StreamingLevels:ForEach(function(_,reference)
-        local l=reference:get()
+    Array.each(c.pawn:GetOuter():GetOuter().StreamingLevels.StreamingLevels,function(_,l)
         if l:IsValid()and l:IsA('/Script/Engine.LevelStreamingDynamic')then
             local s=l.PackageNameToLoad:ToString()
             local profile=options.profile and options.profile(c)
@@ -184,8 +182,8 @@ function Adapter.new(options)
     local sub=library('Engine.Default__SubsystemBlueprintLibrary'):GetWorldSubsystem(c.pc,object('/Script/DuneSandbox.TerrainBlocksSubsystem'))
     assert(sub:IsValid(),'Terrain subsystem unavailable in current world')
     sub.m_SpawnedInstances:ForEach(function(_,ref)
-        ref:get().SubLevels:ForEach(function(_,r)
-            local entry=r:get();local l=entry.StreamingLevel
+        Array.each(ref:get().SubLevels,function(_,entry)
+            local l=entry.StreamingLevel
             local asset=l:IsValid()and l:GetWorldAssetPackageFName():ToString()or''
             -- Some walkable rocks live in Art, while ArtCollision contains only
             -- part of a terrain block. Loading the latter alone exposes lower floors.

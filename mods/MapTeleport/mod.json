@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "MapTeleport",
   "name": "Map Teleport",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Avalakh",
   "description": "Полноэкранный выбор доступного региона и точки карты по Shift+F12 в одиночной игре. Штатное путешествие, безопасная подготовка поверхности и проверка размещения.",
   "type": "lua",

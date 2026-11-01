@@ -2,6 +2,11 @@ package.path='mods/MapTeleport/Scripts/?.lua;'..package.path
 local Adapter=require('map_adapter')
 local count=0
 local function test(name,run)run();count=count+1;print('PASS '..name)end
+local function nativeArray(values,onRead)
+ return setmetatable({GetArrayNum=function()return #values end,ForEach=function()error('Unsafe C array iterator')end},{__index=function(_,i)
+  assert(type(i)=='number'and i>=1 and i<=#values,'Out of range native read');if onRead then onRead()end;return values[i]
+ end})
+end
 local function fixture()
  local f={time=0,objects={},updates={},ignore=2}
  local invalid={IsValid=function()return false end}
@@ -13,7 +18,7 @@ local function fixture()
  local function level(name,asset,loadedName)
   local l=object(name,'LevelStreamingDynamic');l.loaded=true;l.visible=true;l.LevelLODIndex=-1
   l.PackageNameToLoad={ToString=function()return'/Game/'..asset end}
-  l.LODPackageNames={ForEach=function(_,cb)cb(1,{})end}
+  l.LODPackageNames=nativeArray({{}})
   l.level=object(loadedName,'Level')
   function l:IsLevelLoaded()return self.loaded end
   function l:IsLevelVisible()return self.visible end
@@ -141,18 +146,18 @@ test('world membership verifies removal when destroyed actor wrappers remain val
 end)
 test('marker selection ignores POIs and takes an independent finite coordinate snapshot',function()
  local f=fixture();local personal={X=123,Y=456,Z=789}
- f.c.pc.m_PlayerMapMarkerComponent={m_MapMarkers={m_ClientDynamicItemCache={ForEach=function(_,cb)
-  cb(1,{get=function()return{m_MarkerType={Name={ToString=function()return'Objective'end}},m_WorldPosition={X=1,Y=2,Z=3}}end})
-  cb(2,{get=function()return{m_MarkerType={Name={ToString=function()return'PersonalMarker'end}},m_WorldPosition=personal}end})
- end}}}
+ f.c.pc.m_PlayerMapMarkerComponent={m_MapMarkers={m_ClientDynamicItemCache=nativeArray({
+  {m_MarkerType={Name={ToString=function()return'Objective'end}},m_WorldPosition={X=1,Y=2,Z=3}},
+  {m_MarkerType={Name={ToString=function()return'PersonalMarker'end}},m_WorldPosition=personal}
+ })}}
  local point=assert(f.a.marker(f.c));personal.X=999
  assert(point.X==123 and point.Y==456)
 end)
 test('missing ambiguous or nonfinite personal markers are rejected',function()
  local f=fixture();local points={}
- f.c.pc.m_PlayerMapMarkerComponent={m_MapMarkers={m_ClientDynamicItemCache={ForEach=function(_,cb)
-  for i,p in ipairs(points)do cb(i,{get=function()return{m_MarkerType={Name={ToString=function()return'PersonalMarker'end}},m_WorldPosition=p}end})end
- end}}}
+ f.c.pc.m_PlayerMapMarkerComponent={m_MapMarkers={m_ClientDynamicItemCache=setmetatable({GetArrayNum=function()return #points end},{__index=function(_,i)
+  return{m_MarkerType={Name={ToString=function()return'PersonalMarker'end}},m_WorldPosition=points[i]}
+ end})}}
  local p,reason=f.a.marker(f.c);assert(not p and reason=='no-marker')
  points={{X=0/0,Y=2,Z=3}};p,reason=f.a.marker(f.c);assert(not p and reason=='invalid-marker')
  points={{X=1,Y=2,Z=3},{X=4,Y=5,Z=6}};p,reason=f.a.marker(f.c);assert(not p and reason=='invalid-marker')
@@ -211,9 +216,7 @@ test('preparation reads streaming levels incrementally from the current world',f
    GetActorBounds=function(_,_,o,e)o.X=i*1000;o.Y=0;o.Z=0;e.X=500;e.Y=500;e.Z=100 end}
  end
  local visits=0
- local world={StreamingLevels={StreamingLevels={ForEach=function(_,cb)
-  for i,l in ipairs(streaming)do visits=visits+1;cb(i,{get=function()return l end})end
- end}}}
+ local world={StreamingLevels={StreamingLevels=nativeArray(streaming,function()visits=visits+1;collectgarbage('collect')end)}}
  f.c.pawn.GetOuter=function()return{GetOuter=function()return world end}end
  _G.FindAllOf=function(kind)assert(kind=='LandscapeStreamingProxy','Bulk streaming discovery is forbidden');return proxies end
  f.objects['/Script/DuneSandbox.TerrainBlocksSubsystem']={IsValid=function()return true end}
@@ -295,7 +298,7 @@ test('desert biome instances keep separate transforms and verify loaded bounds b
    GetFullName=function()return'LevelStreamingDynamic world.Desert'..i end,
    PackageNameToLoad={ToString=function()return asset end},
    LevelTransform={Rotation={X=0,Y=0,Z=0,W=1},Translation={X=i*10000,Y=0,Z=0},Scale3D={X=1,Y=1,Z=1}},
-   LODPackageNames={ForEach=function()end},LevelLODIndex=-1,bDisableDistanceStreaming=false,bShouldBeVisible=true,
+   LODPackageNames=nativeArray({}),LevelLODIndex=-1,bDisableDistanceStreaming=false,bShouldBeVisible=true,
    IsLevelLoaded=function()return true end,IsLevelVisible=function()return true end,GetLoadedLevel=function()return loaded end,
    ShouldBeLoaded=function()return true end,SetShouldBeLoaded=function()end,SetShouldBeVisible=function()end,
    SetLevelLODIndex=function(self,n)self.LevelLODIndex=n end}
@@ -303,7 +306,7 @@ test('desert biome instances keep separate transforms and verify loaded bounds b
   proxies[#proxies+1]={GetOuter=function()return loaded end,
    GetActorBounds=function(_,_,o,e)o.X=i*10000+500+(f.changedBounds and i==1 and 10 or 0);o.Y=500;o.Z=0;e.X=500;e.Y=500;e.Z=50 end}
  end
- local world={StreamingLevels={StreamingLevels={ForEach=function(_,cb)for i,l in ipairs(levels)do cb(i,{get=function()return l end})end end}}}
+ local world={StreamingLevels={StreamingLevels=nativeArray(levels)}}
  f.c.pawn.GetOuter=function()return{GetOuter=function()return world end}end
  f.objects['/Script/Landscape.LandscapeStreamingProxy']={IsValid=function()return true end}
  f.objects['/Script/Engine.Default__GameplayStatics'].GetAllActorsOfClass=function(_,pc,class,out)

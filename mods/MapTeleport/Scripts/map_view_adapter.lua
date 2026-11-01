@@ -1,6 +1,8 @@
 local Projection=require('map_projection')
 local Profiles=require('map_profiles')
 local Canvas=require('map_canvas')
+local CaptureSettings=require('map_capture_settings')
+local Markers=require('map_marker_adapter')
 local View={}
 local function obj(n)local o=StaticFindObject(n);assert(o:IsValid(),'Map object unavailable: '..n);return o end
 local function lib(n)return obj('/Script/'..n)end
@@ -9,6 +11,11 @@ local function path(o)return o:GetFullName():match('^%S+ (.+)$')end
 local previewZ=10000000
 function View.new(context,catalog)
     local v={zoomValue=1,panU=0,panV=0,owned={}}
+    local markers=Markers.new(context)
+    function v.markers()
+        if not v.map then return end
+        return markers.snapshot(v.map.id)
+    end
     function v.close()
         local errors,remaining={},{}
         for i=#v.owned,1,-1 do
@@ -29,7 +36,7 @@ function View.new(context,catalog)
         end
         v.owned=remaining
         if #errors>0 then error(table.concat(errors,'; '))end
-        v.map=nil;v.texture=nil;v.camera=nil;v.currentId=nil;v.profile=nil;v.previewWorld=nil;v.windowView=nil
+        v.map=nil;v.texture=nil;v.camera=nil;v.currentId=nil;v.profile=nil;v.previewWorld=nil;v.windowView=nil;v.initialView=nil
     end
     local function spawn(c,class,t)
         local stats=lib('Engine.Default__GameplayStatics')
@@ -39,16 +46,17 @@ function View.new(context,catalog)
         stats:FinishSpawningActor(a,t,0);return a
     end
     local function cameraPosition()
+        local fraction=v.windowView and v.windowView.fraction or 1/v.zoomValue
+        local height=CaptureSettings.geometry(v.width,v.nativeSettings.fov,fraction)
         if v.windowView then
-            return{X=v.centerX+(v.windowView.u-.5)*v.width,Y=v.centerY+(v.windowView.v-.5)*v.width,Z=previewZ+v.planeZ+v.cameraHeight}
+            return{X=v.centerX+(v.windowView.u-.5)*v.width,Y=v.centerY+(v.windowView.v-.5)*v.width,Z=previewZ+v.planeZ+height}
         end
-        return {X=v.centerX+v.panU*v.width,Y=v.centerY+v.panV*v.width,Z=previewZ+v.planeZ+v.cameraHeight}
+        return {X=v.centerX+v.panU*v.width,Y=v.centerY+v.panV*v.width,Z=previewZ+v.planeZ+height}
     end
     local function capture()
         local camera=obj(v.camera)
         camera:K2_SetActorLocation(cameraPosition(),false,{},true)
-        local fraction=v.windowView and v.windowView.fraction or 1/v.zoomValue
-        camera.CaptureComponent2D.FOVAngle=2*math.atan(v.width*fraction/(2*v.cameraHeight))*180/math.pi
+        camera.CaptureComponent2D.FOVAngle=v.nativeSettings.fov
         camera.CaptureComponent2D:CaptureScene()
     end
     local function prepare(c,id)
@@ -60,9 +68,22 @@ function View.new(context,catalog)
         local settings=FindFirstOf('CartographyMapSettings');local class
         local subsystem=lib('Engine.Default__SubsystemBlueprintLibrary'):GetWorldSubsystem(c.pc,obj('/Script/DuneSandbox.CartographyMapSubsystem'))
         assert(subsystem:IsValid(),'Cartography subsystem unavailable in current world')
+        local maxSize=subsystem.m_MaxMapRTSize
+        assert(maxSize.X>=2 and maxSize.Y>=2,'Invalid native map render target limits')
+        v.maxRTWidth=math.floor(maxSize.X);v.maxRTHeight=math.floor(maxSize.Y)
         local nativeLayer=subsystem:GetCurrentMapLayerActor()
         assert(nativeLayer:IsValid(),'Native cartography showroom not ready')
         v.previewWorld=path(nativeLayer:GetOuter():GetOuter())
+        local nativeCamera
+        for _,candidate in ipairs(FindAllOf('SceneCapture2D')or{})do
+            if candidate:GetOuter():GetOuter():GetFullName()==obj(v.previewWorld):GetFullName()
+                and candidate.CaptureComponent2D.TextureTarget:IsValid()
+                and path(candidate.CaptureComponent2D.TextureTarget)=='/Game/Dune/GUI/3D/RT_MenuMap.RT_MenuMap'
+                and not candidate:ActorHasTag(FName('MapTeleportPreview'))then
+                assert(not nativeCamera,'Ambiguous native map camera');nativeCamera=candidate.CaptureComponent2D
+            end
+        end
+        assert(nativeCamera,'Native map camera unavailable');v.nativeSettings=CaptureSettings.snapshot(nativeCamera)
         settings.m_PerMapSettings:ForEach(function(k,r)
             if k:get().Name:ToString()==id then class=lib('Engine.Default__KismetSystemLibrary'):LoadClassAsset_Blocking(r:get().m_MapLayerSettings.m_MapLayerActor)end
         end)
@@ -88,11 +109,6 @@ function View.new(context,catalog)
         assert(b.Max.X>b.Min.X and b.Max.Y>b.Min.Y,'Native map bounds invalid')
         v.width=math.max(b.Max.X-b.Min.X,b.Max.Y-b.Min.Y)
         v.centerX=(b.Min.X+b.Max.X)/2;v.centerY=(b.Min.Y+b.Max.Y)/2
-        local fov
-        actor.m_MapLayerComponent.m_ZoomSteps:ForEach(function(_,r)
-            local step=r:get();if not fov and step.VerticalFoV>0 and step.VerticalFoV<180 then fov=step.VerticalFoV end
-        end)
-        assert(fov and fov>0 and fov<180,'Native map camera settings unavailable')
         v.planeZ=0
         if id~='Overland'then
             local metadata,why=Profiles.metadata(row);assert(metadata,why)
@@ -108,8 +124,16 @@ function View.new(context,catalog)
             -- Overview is display-only; it never supplies a placement target.
             v.map=nil
         end
-        v.cameraHeight=math.max(v.width/(2*math.tan(fov*math.pi/360)),b.Max.Z-v.planeZ+100)
-        fov=2*math.atan(v.width/(2*v.cameraHeight))*180/math.pi
+        if row.current and v.map then
+            local p=nativeCamera:GetOwner():K2_GetActorLocation();local height=p.Z-v.planeZ
+            if height>1 then
+                local width=2*height*math.tan(v.nativeSettings.fov*math.pi/360)
+                local player=c.pawn:K2_GetActorLocation()
+                local uv=Projection.screen(v.map,{x=0,y=0,width=1,height=1,zoom=1,panU=0,panV=0},
+                    {mapId=id,layerId='surface',X=player.X,Y=player.Y})
+                if uv then v.initialView={zoom=v.width/width,u=uv.x,v=uv.y}end
+            end
+        end
         local nativeTarget=obj('/Game/Dune/GUI/3D/RT_MenuMap.RT_MenuMap')
         local rt=lib('Engine.Default__KismetRenderingLibrary'):CreateRenderTarget2D(c.pc,1536,1536,nativeTarget.RenderTargetFormat,{r=.015,G=.02,B=.03,A=1},false,false,0,false)
         assert(rt:IsValid(),'Map render target creation failed');v.texture=path(rt)
@@ -117,10 +141,9 @@ function View.new(context,catalog)
         local rot=lib('Engine.Default__KismetMathLibrary'):Conv_RotatorToQuaternion({Pitch=-90,Yaw=-90,Roll=0})
         local cam=spawn(c,obj('/Script/Engine.SceneCapture2D'),{Rotation=rot,Translation=cameraPosition(),Scale3D={X=1,Y=1,Z=1}})
         v.camera=path(cam);local capture=cam.CaptureComponent2D
-        capture.ProjectionType=0;capture.FOVAngle=fov;capture.TextureTarget=rt;capture.CaptureSource=10
+        capture.ProjectionType=0;capture.FOVAngle=v.nativeSettings.fov;capture.TextureTarget=rt
         capture.bAlwaysPersistRenderingState=true
-        capture.PostProcessSettings.bOverride_AutoExposureMethod=true;capture.PostProcessSettings.AutoExposureMethod=0
-        capture.PostProcessSettings.bOverride_AutoExposureBias=true;capture.PostProcessSettings.AutoExposureBias=1
+        CaptureSettings.apply(capture,v.nativeSettings)
         capture.PrimitiveRenderMode=2;capture.bCaptureEveryFrame=false;capture.bCaptureOnMovement=false
         capture:ShowOnlyActorComponents(actor,true);capture:CaptureScene()
         v.currentId=id;v.pendingCapture=true;v.captureUntil=nil;v.nextCapture=nil
@@ -132,7 +155,7 @@ function View.new(context,catalog)
             local ok,why=pcall(prepare,c,id)
             if not ok then v.close();return nil,'Не удалось открыть карту: '..tostring(why)end
         end
-        return {texture=v.texture,map=v.map,profile=v.profile}
+        return {texture=v.texture,map=v.map,profile=v.profile,initialView=v.initialView}
     end
     local function viewport(rect)
         return{x=rect.x,y=rect.y,width=rect.width,height=rect.height,zoom=v.zoomValue,panU=v.panU,panV=v.panV}
@@ -146,7 +169,7 @@ function View.new(context,catalog)
         local p=Projection.screen(v.map,viewport(rect),point);if p then return p.x,p.y end
     end
     function v.viewport(viewport,rect)
-        local next=Canvas.capture(viewport,rect);local old=v.windowView
+        local next=Canvas.capture(viewport,rect,v.maxRTWidth,v.maxRTHeight);local old=v.windowView
         if old and old.width==next.width and old.height==next.height and math.abs(old.u-next.u)<1e-8 and math.abs(old.v-next.v)<1e-8 and math.abs(old.fraction-next.fraction)<1e-8 then return end
         if not old or old.width~=next.width or old.height~=next.height then
             lib('Engine.Default__KismetRenderingLibrary'):ResizeRenderTarget2D(obj(v.texture),next.width,next.height)

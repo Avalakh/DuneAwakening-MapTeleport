@@ -3,6 +3,7 @@
 local Window={}
 local Profiles=require('map_profiles')
 local Canvas=require('map_canvas')
+local MarkerModel=require('map_marker_model')
 function Window.canTeleport(view,descriptor)
     local region=view and view.region
     if not region then return false end
@@ -15,6 +16,8 @@ local function path(o)return o:GetFullName():match('^%S+ (.+)$')end
 local gold={r=.83,G=.65,B=.32,A=1}
 local white={r=.94,G=.91,B=.83,A=1}
 local background={r=.025,G=.031,B=.05,A=1}
+-- UE4SS table marshalling uses the reflected field name: lowercase r.
+local function nativeColor(c)return{r=c.R,G=c.G,B=c.B,A=c.A}end
 function Window.new(a)
     local ui={buttons={},serial=0,bindings={},events={}}
     local bridge='/Script/UMG.Widget:InvalidateLayoutAndVolatility'
@@ -102,6 +105,70 @@ function Window.new(a)
         ui.serial=ui.serial+1
         local p=create('Border','MapTeleportPanel'..ui.serial);p:SetBrushColor(color);place(root,p,x,y,w,h,z);return p
     end
+    local function markerIcon(row)
+        local pc=a.context().pc
+        local sys=obj('/Script/Engine.Default__KismetSystemLibrary')
+        local class=sys:LoadClassAsset_Blocking(sys:Conv_SoftClassPathToSoftClassRef(sys:MakeSoftClassPath('/Game/Dune/GUI/Widgets/Components/Item/W_DuneIconPreset.W_DuneIconPreset_C')))
+        assert(class:IsValid(),'Native marker icon widget unavailable')
+        local w=obj('/Script/UMG.Default__WidgetBlueprintLibrary'):Create(pc,class,pc)
+        w:SetPresetSettings({Name=FName(row.preset)})
+        if row.icon~=''then w:SetIcon(sys:Conv_SoftObjPathToSoftObjRef(sys:MakeSoftObjectPath(row.icon)))end
+        if row.iconTint then w.m_Icon:SetBrushTintColor({SpecifiedColor=nativeColor(row.iconTint),ColorUseRule=0})end
+        if row.backgroundTint then w.m_Background:SetBrushTintColor({SpecifiedColor=nativeColor(row.backgroundTint),ColorUseRule=0})end
+        if row.tint then w:SetColorAndOpacity(nativeColor(row.tint))end
+        w:SetVisibility(3);return w
+    end
+    function ui.refreshMarkers()
+        if not ui.markerClip or not ui.descriptor or not ui.descriptor.map then return end
+        local ok,snapshot=pcall(a.map.markers)
+        if not ok or not snapshot then
+            ui.markerSnapshot={mapId=ui.descriptor.map.id,layerId='surface',rows={},status='unavailable'}
+            if not ok and ui.markerError~=tostring(snapshot)then print('[MapTeleport] markers: '..tostring(snapshot)..'\n');ui.markerError=tostring(snapshot)end
+        else ui.markerSnapshot=snapshot;ui.markerError=nil end
+    end
+    function ui.layoutMarkers()
+        local snapshot=ui.markerSnapshot;local l=ui.canvasLayout
+        if not snapshot or not l or not ui.markerClip then return end
+        local layout=MarkerModel.layout(snapshot,ui.descriptor.map,ui.mapRect,{x=l.frame.x,y=l.frame.y,width=l.width,height=l.height},30)
+        ui.markerLayout=layout;local wanted={};ui.markerEntries=ui.markerEntries or{}
+        for _,entry in ipairs(layout)do
+            local r=entry.marker;local key=r.id..'|'..r.icon..'|'..r.preset
+            for _,color in ipairs({r.iconTint or{},r.backgroundTint or{},r.tint or{}})do
+                for _,channel in ipairs({'R','G','B','A'})do key=key..'|'..tostring(color[channel]or'')end
+            end
+            wanted[key]=true
+            local widget=ui.markerEntries[key]
+            if not widget then
+                local icon=markerIcon(r);local slot=place(obj(ui.markerClip),icon,0,0,30,30,10+r.priority)
+                widget={path=path(icon),slot=slot};ui.markerEntries[key]=widget
+            end
+            -- Native async icon loading may restore its default preset colours.
+            -- Reapply the resolved native presentation on each data refresh.
+            if widget.styleTime~=ui.markerTime then
+                local icon=obj(widget.path)
+                if r.iconTint then icon.m_Icon:SetBrushTintColor({SpecifiedColor=nativeColor(r.iconTint),ColorUseRule=0})end
+                if r.backgroundTint then icon.m_Background:SetBrushTintColor({SpecifiedColor=nativeColor(r.backgroundTint),ColorUseRule=0})end
+                if r.tint then icon:SetColorAndOpacity(nativeColor(r.tint))end
+                widget.styleTime=ui.markerTime
+            end
+            widget.slot:SetPosition({X=entry.x-l.frame.x-15,Y=entry.y-l.frame.y-15+1000})
+            if r.category=='player'then obj(widget.path):SetRenderTransformAngle(r.rotation*180/math.pi)end
+        end
+        for key,w in pairs(ui.markerEntries)do if not wanted[key]then obj(w.path):RemoveFromParent();ui.markerEntries[key]=nil end end
+        if ui.markerLegend then
+            local label='Места · Базы · Задания · Личные метки · Игрок'
+            if snapshot.status=='remote-unavailable'then label=label..'\nОбозначения региона не загружены игрой'
+            elseif snapshot.status=='partial'then label=label..'\nЧасть обозначений не предоставлена игрой'
+            elseif snapshot.status~='available'then label=label..'\nОбозначения временно недоступны'end
+            obj(ui.markerLegend):SetText(FText(label))
+        end
+        if ui.markerTooltip then
+            local c=a.context();local p=obj('/Script/UMG.Default__WidgetLayoutLibrary'):GetMousePositionOnViewport(c.pc)
+            local hovered=Canvas.contains(l,p.X,p.Y)and MarkerModel.hover(layout,p.X,p.Y)
+            obj(ui.markerTooltip):SetVisibility(hovered and 4 or 1)
+            if hovered then obj(ui.markerTooltipText):SetText(FText(hovered.label))end
+        end
+    end
     local function button(root,label,x,y,w,h,event,enabled,selected)
         ui.serial=ui.serial+1
         local b=create('Button','MapTeleportButton'..ui.serial)
@@ -161,6 +228,7 @@ function Window.new(a)
         if #errors>0 then ui.failed=true;error(table.concat(errors,'; '))end
         ui.widget=nil;ui.buttons={};ui.view=nil;ui.inputOwner=nil;ui.contextKey=nil;ui.previousWindow=nil;ui.scroll=nil
         ui.canvasLayout=nil;ui.canvasMapId=nil;ui.mapBars=nil;ui.mapExtents=nil;ui.mapSlot=nil;ui.crossSlots=nil;ui.scrollPending=nil;ui.focusTarget=nil;ui.focusEvent=nil
+        ui.markerClip=nil;ui.markerEntries=nil;ui.markerSnapshot=nil;ui.markerLayout=nil;ui.markerLegend=nil;ui.markerTooltip=nil;ui.markerTooltipText=nil;ui.markerTime=nil
     end
     function ui.syncMap()
         local l=ui.canvasLayout;if not l or not ui.mapBars then return end
@@ -171,6 +239,7 @@ function Window.new(a)
             local px,py=a.map.screen(ui.view.point,r)
             if px then for _,s in ipairs(ui.crossSlots)do s.slot:SetPosition({X=px-l.frame.x+s.x,Y=py-l.frame.y+s.y+1000})end end
         end
+        ui.layoutMarkers()
         return x,y
     end
     function ui.applyCanvas(l)
@@ -242,6 +311,7 @@ function Window.new(a)
         local old=w.WidgetTree.RootWidget
         if old:IsValid()then old:RemoveFromParent()end
         local root=create('CanvasPanel','MapTeleportCanvas'..view.revision);w.WidgetTree.RootWidget=root
+        ui.markerClip=nil;ui.markerEntries={};ui.markerSnapshot=nil;ui.markerTooltip=nil;ui.markerLegend=nil
         local layout=obj('/Script/UMG.Default__WidgetLayoutLibrary')
         local physical=layout:GetViewportSize(pc);local dpi=layout:GetViewportScale(pc)
         assert(physical.X>0 and physical.Y>0 and dpi>0,'Viewport is not ready')
@@ -281,6 +351,7 @@ function Window.new(a)
             if ui.canvasMapId~=mapId then
                 zoom=descriptor.profile and 1 or .001;u,v=.5,.5
                 if view.point then local p=a.map.map;u=(view.point.X-p.originX)/p.ux;v=(view.point.Y-p.originY)/p.vy end
+                if descriptor.initialView then zoom=descriptor.initialView.zoom;u,v=descriptor.initialView.u,descriptor.initialView.v end
             end
             local l=Canvas.layout(frame,zoom,u,v);ui.canvasLayout=l;ui.canvasMapId=mapId
             local wheel=create('ScrollBox','MapTeleportMapWheel'..view.revision)
@@ -289,6 +360,7 @@ function Window.new(a)
             local extent=create('SizeBox','MapTeleportWheelExtent'..view.revision)
             extent:SetWidthOverride(l.width);extent:SetHeightOverride(l.height+2000)
             local clip=create('CanvasPanel','MapTeleportMapViewport'..view.revision)
+            ui.markerClip=path(clip)
             extent:AddChild(clip);wheel:AddChild(extent)
             ui.wheelScroll=path(wheel);wheel.OnUserScrolled:Add(wheel,FName('SetScrollOffset'))
             ui.mapExtents={}
@@ -322,10 +394,17 @@ function Window.new(a)
                 if x then
                     ui.crossSlots={}
                     for _,d in ipairs({{-13,-3,26,6,{r=0,G=0,B=0,A=1}},{-3,-13,6,26,{r=0,G=0,B=0,A=1}},{-10,-1,20,2,gold},{-1,-10,2,20,gold}})do
-                        local line=panel(clip,x-frame.x+d[1],y-frame.y+d[2]+1000,d[3],d[4],d[5],5);line:SetVisibility(4)
+                        local line=panel(clip,x-frame.x+d[1],y-frame.y+d[2]+1000,d[3],d[4],d[5],200);line:SetVisibility(4)
                         ui.crossSlots[#ui.crossSlots+1]={slot=line.Slot,x=d[1],y=d[2]}
                     end
                 end
+            end
+            if descriptor.map then
+                local legend=text('',14,gold);place(root,legend,frame.x,119,math.max(100,frame.width-280),36,4);ui.markerLegend=path(legend)
+                local tooltip=panel(root,frame.x+12,frame.y+12,430,40,{R=.015,G=.012,B=.02,A=.95},8)
+                local caption=text('',16,gold);tooltip:AddChild(caption);tooltip:SetVisibility(1)
+                ui.markerTooltip=path(tooltip);ui.markerTooltipText=path(caption)
+                ui.refreshMarkers();ui.layoutMarkers();ui.markerTime=os.time()
             end
         else ui.canvasLayout=nil;place(root,text(reason or'Карта загружается…',20,white),mapX,mapY+mapSize/2,frame.width,60,2)end
         local bottom=height-88
@@ -379,6 +458,7 @@ function Window.new(a)
             obj(ui.wheelScroll):SetScrollOffset(1000)
         end
         ui.syncMap()
+        if ui.markerTime~=os.time()then ui.markerTime=os.time();ui.refreshMarkers();ui.layoutMarkers()end
         if ui.mapDrag then
             if obj(ui.mapButton):IsPressed()then
                 local p=obj('/Script/UMG.Default__WidgetLayoutLibrary'):GetMousePositionOnViewport(pc)

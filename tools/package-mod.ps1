@@ -12,7 +12,8 @@ $files = @(
     'Scripts/map_adapter.lua','Scripts/runtime.lua','Scripts/teleport.lua','Scripts/placement_search.lua',
     'Scripts/application.lua','Scripts/input_owner.lua','Scripts/map_profiles.lua',
     'Scripts/map_projection.lua','Scripts/map_canvas.lua','Scripts/map_view_adapter.lua','Scripts/teleport_window.lua',
-    'Scripts/region_catalog.lua','Scripts/region_selection.lua','Scripts/region_travel.lua','Scripts/travel_adapter.lua'
+    'Scripts/region_catalog.lua','Scripts/region_selection.lua','Scripts/region_travel.lua','Scripts/travel_adapter.lua','Scripts/unreal_array.lua',
+    'Scripts/map_capture_settings.lua','Scripts/map_marker_adapter.lua','Scripts/map_marker_model.lua'
 ) | Sort-Object
 foreach ($relative in $files) { if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot $relative) -PathType Leaf)) { throw "Missing $relative" } }
 [void][IO.Directory]::CreateDirectory($OutputDirectory)

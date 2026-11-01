@@ -39,3 +39,10 @@ do
 end
 print('PASS responsive map canvas: aspect ratios, fit/fill, scroll bounds, pointer-anchored zoom and world-coordinate invariance')
 print('PASS drag threshold, both axes, return-to-origin gesture and map bounds')
+local viewport={x=0,y=0,width=2200,height=800}
+local rect={x=0,y=0,width=3000,height=3000}
+local small=C.capture(viewport,rect);local native=C.capture(viewport,rect,2400,1100)
+assert(native.width<=2400 and native.height<=1100 and native.width>small.width)
+assert(native.width%2==0 and native.height%2==0 and math.abs(native.width/native.height-2200/800)<1e-8)
+assert(C.capture(viewport,rect).width==small.width,'Native limits must not contaminate the default capture cache')
+print('PASS viewport capture preserves native RT limits, aspect and independent cache keys')
